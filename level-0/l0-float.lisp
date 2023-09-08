@@ -488,49 +488,61 @@
                 (float-rat-neg-exp num den (if minusp -1 1) result t)))))))))
 
 #+64-bit-target
-(defun %short-float-ratio (number)
-  (let* ((num (%numerator number))
-         (den (%denominator number)))
-    ;; dont error if result is floatable when either top or bottom is
-    ;; not.  maybe do usual first, catching error
-    (if (not (or (bignump num)(bignump den)))
-      (/ (the short-float (%short-float num))
-         (the short-float (%short-float den)))
-      (let* ((numlen (integer-length num))
-             (denlen (integer-length den))
-             (exp (- numlen denlen))
-             (minusp (minusp num)))
-        (if (and (<= numlen IEEE-single-float-bias)
-                 (<= denlen IEEE-single-float-bias)
-                 #|(not (minusp exp))|# 
-                 (<= (abs exp) IEEE-single-float-mantissa-width))
-          (/ (the short-float (%short-float num))
-             (the short-float (%short-float den)))
-          (if (> exp IEEE-single-float-mantissa-width)
-            (progn  (%short-float (round num den)))
-            (if (>= exp 0)
-              ; exp between 0 and 23 and nums big
-              (let* ((shift (- IEEE-single-float-digits exp))
-                     (num (if minusp (- num) num))
-                     (int (round (ash num shift) den)) ; gaak
-                     (intlen (integer-length int))
-                     (new-exp (+ intlen (- IEEE-single-float-bias shift))))
-		(when (> intlen IEEE-single-float-digits)
-                  (setq shift (1- shift))
-                  (setq int (round (ash num shift) den))
-                  (setq intlen (integer-length int))
-                  (setq new-exp (+ intlen (- IEEE-single-float-bias shift))))
-                (when (> new-exp IEEE-single-float-normal-exponent-max)
-                  (error (make-condition 'floating-point-overflow
-                                         :operation 'short-float
-                                         :operands (list number))))
-                (make-short-float-from-fixnums 
-                   (ldb (byte IEEE-single-float-digits  (- intlen  IEEE-single-float-digits)) int)
-                   new-exp
-                   (if minusp -1 1)))
-              ; den > num - exp negative
-              (progn  
-                (float-rat-neg-exp num den (if minusp -1 1) nil t)))))))))
+(defun %short-float-ratio (x)
+  (let* ((signed-num (%numerator x))
+         (plusp (plusp signed-num))
+         (num (if plusp signed-num (- signed-num)))
+         (den (%denominator x))
+         (digits IEEE-single-float-digits)
+         (scale 0))
+    (declare (fixnum digits scale))
+    ;; Strip any trailing zeros from the denominator and move it into the scale
+    ;; factor (to minimize the size of the operands.)
+    (let ((den-twos (1- (integer-length (logxor den (1- den))))))
+      (declare (fixnum den-twos))
+      (decf scale den-twos)
+      (setq den (ash den (- den-twos))))
+    ;; Guess how much we need to scale by from the magnitudes of the numerator
+    ;; and denominator. We want one extra bit for a guard bit.
+    (let* ((num-len (integer-length num))
+           (den-len (integer-length den))
+           (delta (- den-len num-len))
+           (shift (1+ (the fixnum (+ delta digits))))
+           (shifted-num (ash num shift)))
+      (declare (fixnum delta shift))
+      (decf scale delta)
+      (flet ((floatit (bits)
+                 (let ((sign (if plusp 0 1)))
+                   (make-short-float-from-fixnums bits IEEE-single-float-bias
+                                                  sign))))
+        (declare (inline floatit))
+      (flet ((float-and-scale (bits)
+                 (let* ((bits (ash bits -1))
+                        (len (integer-length bits)))
+                   (cond ((> len digits)
+                          (assert (= len (the fixnum (1+ digits))))
+                          (scale-float (floatit (ash bits -1)) (1+ scale)))
+                         (t
+                          (scale-float (floatit bits) scale))))))
+        (loop
+          (multiple-value-bind (fraction-and-guard rem)
+              (truncate shifted-num den)
+            (let ((extra (- (integer-length fraction-and-guard) digits)))
+              (declare (fixnum extra))
+              (cond ((/= extra 1)
+                     (assert (> extra 1)))
+                    ((oddp fraction-and-guard)
+                     (return
+                       (if (zerop rem)
+                           (float-and-scale
+                            (if (zerop (logand fraction-and-guard 2))
+                                fraction-and-guard
+                                (1+ fraction-and-guard)))
+                           (float-and-scale (1+ fraction-and-guard)))))
+                    (t
+                     (return (float-and-scale fraction-and-guard)))))
+            (setq shifted-num (ash shifted-num -1))
+            (incf scale))))))))
 
 
 #+32-bit-target
