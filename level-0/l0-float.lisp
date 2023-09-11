@@ -512,7 +512,7 @@
       (declare (fixnum delta shift))
       (decf scale delta)
       (flet ((floatit (bits)
-                 (let ((sign (if plusp 0 1)))
+                 (let ((sign (if plusp 1 -1)))
                    (make-short-float-from-fixnums bits IEEE-single-float-bias
                                                   sign))))
         (declare (inline floatit))
@@ -543,7 +543,6 @@
                      (return (float-and-scale fraction-and-guard)))))
             (setq shifted-num (ash shifted-num -1))
             (incf scale))))))))
-
 
 #+32-bit-target
 (defun %short-float (number &optional result)
